@@ -1,3 +1,4 @@
+
 'use client'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,48 +32,80 @@ export default function NewRequest({ periods }: { periods: Period[] }) {
     );
 
     const handleSubmit = async () => {
+        if (!canSubmit || isLoading) return;
+
         setIsLoading(true);
 
-        const client = generateClient();
-        const request = await client.models.Request.create({
-            periodId,
-            collateralDescription: collateral,
-        });
+        try {
+            const client = generateClient();
 
-        if (request.errors) {
-            handleError(request.errors);
-            setIsLoading(false);
-            return;
-        }
+            // Read the latest period state rather than trusting the initial page data.
+            const { data: currentPeriod, errors: periodErrors } =
+                await client.models.Period.get({ id: periodId });
 
-        const requestId = request.data?.id;
-        if (!requestId) {
-            handleError('Expected nonnull returned requestId, but got null');
-            setIsLoading(false);
-            return;
-        }
-
-        const equipmentTypeRequsts = await Promise.all(selectedEquipmentTypeIds.map((equipmentTypeId, i) =>
-            client.models.EquipmentTypeRequest.create({ equipmentTypeId, requestId, rank: i+1 })
-        ));
-
-        let hasErrors = false;
-        equipmentTypeRequsts.map(({ errors }) => {
-            if (errors) {
-                handleError(errors);
-                hasErrors = true;
+            if (periodErrors?.length) {
+                handleError(periodErrors);
+                toast.error('Unable to verify the loaning period. Please try again.');
+                return;
             }
-        });
 
-        if (!hasErrors) {
-            setPeriodId('');
-            setSelectedEquipmentTypeIds([]);
-            setCollateral('');
+            if (!currentPeriod) {
+                toast.error('This loaning period could not be found. Please refresh the page.');
+                return;
+            }
 
-            toast.info('Requested created (reload page to see updates)');
+            const endTime = Date.parse(currentPeriod.endDateTime);
+
+            if (
+                currentPeriod.acceptingRequests !== true ||
+                !Number.isFinite(endTime) ||
+                Date.now() >= endTime
+            ) {
+                toast.error('This loaning period is no longer accepting requests.');
+                return;
+            }
+
+            const request = await client.models.Request.create({
+                periodId,
+                collateralDescription: collateral,
+            });
+
+            if (request.errors) {
+                handleError(request.errors);
+                return;
+            }
+
+            const requestId = request.data?.id;
+            if (!requestId) {
+                handleError('Expected nonnull returned requestId, but got null');
+                return;
+            }
+
+            const equipmentTypeRequests = await Promise.all(selectedEquipmentTypeIds.map((equipmentTypeId, i) =>
+                client.models.EquipmentTypeRequest.create({ equipmentTypeId, requestId, rank: i + 1 })
+            ));
+
+            let hasErrors = false;
+            equipmentTypeRequests.forEach(({ errors }) => {
+                if (errors) {
+                    handleError(errors);
+                    hasErrors = true;
+                }
+            });
+
+            if (!hasErrors) {
+                setPeriodId('');
+                setSelectedEquipmentTypeIds([]);
+                setCollateral('');
+
+                toast.info('Request created (reload page to see updates)');
+            }
+        } catch (error) {
+            handleError(error instanceof Error ? error.message : 'Unexpected error while submitting request');
+            toast.error('Request submission failed. Please try again.');
+        } finally {
+            setIsLoading(false);
         }
-
-        setIsLoading(false);
     }
 
     return (
